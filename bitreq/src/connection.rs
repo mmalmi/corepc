@@ -405,29 +405,6 @@ impl AsyncConnection {
 
             let mut read = None;
             let mut write = None;
-            if !request.config.pipelining {
-                // If we're not pipelining, wait for any existing pipelined requests to complete.
-                // Specifically, wait until we have both locks and either we're going to build a
-                // new connection (because `permits` is exhausted/poisoned) or there are no
-                // pending readers (because `next_request_id` and `readable_request_id` are the
-                // same).
-                write = Some(Self::timeout(request.timeout_at, conn.write.lock()).await?);
-                read = Some(Self::timeout(request.timeout_at, conn.read.lock()).await?);
-                while {
-                    let next_read = conn.readable_request_id.load(Ordering::Relaxed);
-                    let next_request = conn.next_request_id.load(Ordering::Relaxed);
-                    let has_open_request = next_read < next_request;
-                    let permits_alive = conn.permits.load(Ordering::Relaxed) > 0;
-                    permits_alive && has_open_request
-                } {
-                    write.take();
-                    read.take();
-                    tokio::task::yield_now().await;
-                    write = Some(Self::timeout(request.timeout_at, conn.write.lock()).await?);
-                    read = Some(Self::timeout(request.timeout_at, conn.read.lock()).await?);
-                }
-            }
-
             macro_rules! retry_new_connection {
                 (CONNECTION_STATE_UNDEFINED) => {
                     // The connection may next return bytes for a request which timed out, thus no
@@ -454,6 +431,33 @@ impl AsyncConnection {
                     // and go first).
                     return self.send(request).await;
                 };
+            }
+
+            if !request.config.pipelining {
+                // If we're not pipelining, wait for any existing pipelined requests to complete.
+                // Specifically, wait until we have both locks and either we're going to build a
+                // new connection (because `permits` is exhausted/poisoned) or there are no
+                // pending readers (because `next_request_id` and `readable_request_id` are the
+                // same).
+                write = Some(Self::timeout(request.timeout_at, conn.write.lock()).await?);
+                read = Some(Self::timeout(request.timeout_at, conn.read.lock()).await?);
+                while {
+                    let next_read = conn.readable_request_id.load(Ordering::Relaxed);
+                    let next_request = conn.next_request_id.load(Ordering::Relaxed);
+                    let dropped_request = conn.min_dropped_reader_id.load(Ordering::Relaxed);
+                    if dropped_request <= next_request {
+                        retry_new_connection!(CONNECTION_STILL_READABLE, write);
+                    }
+                    let has_open_request = next_read < next_request;
+                    let permits_alive = conn.permits.load(Ordering::Relaxed) > 0;
+                    permits_alive && has_open_request
+                } {
+                    write.take();
+                    read.take();
+                    tokio::task::yield_now().await;
+                    write = Some(Self::timeout(request.timeout_at, conn.write.lock()).await?);
+                    read = Some(Self::timeout(request.timeout_at, conn.read.lock()).await?);
+                }
             }
 
             let request_id;
