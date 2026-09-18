@@ -5,15 +5,15 @@
 //! We ignore option arguments unless they effect the shape of the returned JSON data.
 
 pub mod blockchain;
-pub mod control;
-pub mod generating;
-pub mod hidden;
-pub mod mining;
-pub mod network;
+pub(crate) mod control;
+pub(crate) mod generating;
+pub(crate) mod hidden;
+pub(crate) mod mining;
+pub(crate) mod network;
 pub mod raw_transactions;
-pub mod util;
-pub mod wallet;
-pub mod zmq;
+pub(crate) mod util;
+pub(crate) mod wallet;
+pub(crate) mod zmq;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
