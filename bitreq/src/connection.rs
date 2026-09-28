@@ -472,8 +472,15 @@ impl AsyncConnection {
                     request.connection_params(),
                 );
                 this_request.id = Some(request_id);
-                let write_res =
-                    Self::timeout(request.timeout_at, write.write_all(&request.as_bytes())).await;
+                // Flush after the write: a TLS stream can accept the whole request
+                // while still holding its last records in an internal buffer, and we
+                // would otherwise wait for a response to a request the server never
+                // finished receiving.
+                let write_res = Self::timeout(request.timeout_at, async {
+                    write.write_all(&request.as_bytes()).await?;
+                    write.flush().await
+                })
+                .await;
                 match write_res {
                     Err(e) => {
                         // If we failed to write the request, mark the socket as dead for future
@@ -717,6 +724,8 @@ impl Connection {
             #[cfg(feature = "log")]
             log::trace!("Writing HTTP request.");
             self.stream.write_all(&request.as_bytes())?;
+            // Flush: a TLS stream can hold the tail of the request in its own buffer.
+            self.stream.flush()?;
 
             // Receive response
             #[cfg(feature = "log")]
