@@ -4,11 +4,11 @@
 //!
 //! We ignore option arguments unless they effect the shape of the returned JSON data.
 
-pub mod blockchain;
-pub mod hidden;
-pub mod mining;
-pub mod network;
-pub mod raw_transactions;
+pub(crate) mod blockchain;
+pub(crate) mod hidden;
+pub(crate) mod mining;
+pub(crate) mod network;
+pub(crate) mod raw_transactions;
 
 use std::collections::BTreeMap;
 use std::path::Path;

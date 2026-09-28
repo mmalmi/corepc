@@ -5,7 +5,7 @@
 //! We ignore option arguments unless they effect the shape of the returned JSON data.
 
 pub mod blockchain;
-pub mod raw_transactions;
+pub(crate) mod raw_transactions;
 
 use std::collections::BTreeMap;
 use std::path::Path;

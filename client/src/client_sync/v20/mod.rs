@@ -4,8 +4,8 @@
 //!
 //! We ignore option arguments unless they effect the shape of the returned JSON data.
 
-pub mod generating;
-pub mod hidden;
+pub(crate) mod generating;
+pub(crate) mod hidden;
 
 use std::collections::BTreeMap;
 use std::path::Path;

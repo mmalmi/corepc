@@ -4,8 +4,8 @@
 //!
 //! We ignore option arguments unless they effect the shape of the returned JSON data.
 
-pub mod raw_transactions;
-pub mod wallet;
+pub(crate) mod raw_transactions;
+pub(crate) mod wallet;
 
 use std::collections::BTreeMap;
 use std::path::Path;
