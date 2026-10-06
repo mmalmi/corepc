@@ -10,11 +10,11 @@ use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 #[cfg(feature = "async")]
 use std::sync::{Arc, Mutex};
 #[cfg(feature = "async")]
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::time::Instant;
 
 #[cfg(feature = "async")]
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 #[cfg(feature = "async")]
 use tokio::net::TcpStream as AsyncTcpStream;
 #[cfg(feature = "async")]
@@ -220,6 +220,16 @@ impl AsyncWrite for AsyncHttpStream {
 const MAX_SEND_PERMITS: isize = isize::MAX;
 
 #[cfg(feature = "async")]
+fn noop_waker() -> Waker {
+    const fn raw_waker() -> RawWaker {
+        fn noop(_: *const ()) {}
+        fn clone(_: *const ()) -> RawWaker { raw_waker() }
+        RawWaker::new(core::ptr::null(), &RawWakerVTable::new(clone, noop, noop, noop))
+    }
+    unsafe { Waker::from_raw(raw_waker()) }
+}
+
+#[cfg(feature = "async")]
 struct AsyncConnectionState {
     write: AsyncMutex<WriteHalf<AsyncHttpStream>>,
     read: AsyncMutex<tokio::io::BufReader<ReadHalf<AsyncHttpStream>>>,
@@ -401,8 +411,8 @@ impl AsyncConnection {
                 // new connection (because `permits` is exhausted/poisoned) or there are no
                 // pending readers (because `next_request_id` and `readable_request_id` are the
                 // same).
-                read = Some(Self::timeout(request.timeout_at, conn.read.lock()).await?);
                 write = Some(Self::timeout(request.timeout_at, conn.write.lock()).await?);
+                read = Some(Self::timeout(request.timeout_at, conn.read.lock()).await?);
                 while {
                     let next_read = conn.readable_request_id.load(Ordering::Relaxed);
                     let next_request = conn.next_request_id.load(Ordering::Relaxed);
@@ -410,11 +420,11 @@ impl AsyncConnection {
                     let permits_alive = conn.permits.load(Ordering::Relaxed) > 0;
                     permits_alive && has_open_request
                 } {
-                    read.take();
                     write.take();
+                    read.take();
                     tokio::task::yield_now().await;
-                    read = Some(Self::timeout(request.timeout_at, conn.read.lock()).await?);
                     write = Some(Self::timeout(request.timeout_at, conn.write.lock()).await?);
+                    read = Some(Self::timeout(request.timeout_at, conn.read.lock()).await?);
                 }
             }
 
@@ -472,6 +482,33 @@ impl AsyncConnection {
                     request.connection_params(),
                 );
                 this_request.id = Some(request_id);
+
+                // If the socket has been sitting idle for a while, we may find that its
+                // actually dead because the server closed it with a FIN.
+                //
+                // In this case the connection is in FIN_WAIT/CLOSE_WAIT, allowing us to send a
+                // fresh request to the server, it just won't actually read whatever it is we send.
+                // To detect this, we need to make sure the socket is still readable before we try
+                // to write a request. This isn't an issue if we have pending requests at the read
+                // stage - if they detect an EOF they'll mark the connection dead as soon as it
+                // EOF's and we won't even get here. If we have no requests waiting to read, we can
+                // detect this by making sure an async socket read simply returns a
+                // `Poll::Pending`. If it returns anything else, either the socket is EOF, or the
+                // server is returning garbage (there's no request to read!).
+                if conn.readable_request_id.load(Ordering::Acquire) == request_id {
+                    if read.is_none() {
+                        read = Some(Self::timeout(request.timeout_at, conn.read.lock()).await?);
+                    }
+                    if let Some(read) = read.as_mut() {
+                        let waker = noop_waker();
+                        let poll =
+                            Pin::new(&mut **read).poll_fill_buf(&mut Context::from_waker(&waker));
+                        if request_id > 0 && poll.is_ready() {
+                            retry_new_connection!(CONNECTION_STILL_READABLE, write);
+                        }
+                    }
+                }
+
                 // Flush after the write: a TLS stream can accept the whole request
                 // while still holding its last records in an internal buffer, and we
                 // would otherwise wait for a response to a request the server never
