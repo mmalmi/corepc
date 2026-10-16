@@ -8,14 +8,13 @@ mod download {
 #[cfg(feature = "download")]
 mod download {
     use std::fs::File;
-    use std::io::{self, BufRead, BufReader, Cursor, Read};
+    use std::io::{BufRead, BufReader, Read};
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::str::FromStr;
 
     use anyhow::Context;
     use bitcoin_hashes::{sha256, Hash};
-    use flate2::read::GzDecoder;
-    use tar::Archive;
 
     include!("src/versions.rs");
 
@@ -144,50 +143,34 @@ mod download {
                 file_or_url
             );
 
-            if download_filename.ends_with(".tar.gz") {
-                let d = GzDecoder::new(&tarball_bytes[..]);
-
-                let targets: &[&Path] = &[
-                    Path::new("bin/bitcoind"),
-                    Path::new("bin/bitcoin-cli"),
-                    Path::new("libexec/bitcoin-node"),
-                ];
-                let mut archive = Archive::new(d);
-                for mut entry in archive.entries().unwrap().flatten() {
-                    if let Ok(file) = entry.path() {
-                        if targets.iter().any(|t| file.ends_with(t)) {
-                            entry.unpack_in(&bitcoin_exe_home).unwrap();
-                        }
-                    }
-                }
-            } else if download_filename.ends_with(".zip") {
-                let cursor = Cursor::new(tarball_bytes);
-                let mut archive = zip::ZipArchive::new(cursor).unwrap();
-                for i in 0..zip::ZipArchive::len(&archive) {
-                    let mut file = archive.by_index(i).unwrap();
-                    let outpath = match file.enclosed_name() {
-                        Some(path) => path.to_owned(),
-                        None => continue,
-                    };
-
-                    if outpath.file_name().map(|s| s.to_str()) == Some(Some("bitcoind.exe")) {
-                        let dest = bitcoin_exe_home.join(&outpath);
-                        let parent = dest.parent().unwrap();
-                        std::fs::create_dir_all(parent)
-                            .with_context(|| format!("cannot create dir {:?}", parent))?;
-                        let mut outfile = std::fs::File::create(&dest)
-                            .with_context(|| format!("cannot create file {:?}", dest))?;
-                        io::copy(&mut file, &mut outfile).unwrap();
-                        break;
-                    }
+            let archive_path = out_dir.join(&download_filename);
+            std::fs::write(&archive_path, &tarball_bytes)?;
+            let mut command = Command::new("tar");
+            command.arg("-xf").arg(&archive_path).arg("-C").arg(&bitcoin_exe_home);
+            if cfg!(target_os = "windows") {
+                command.arg(format!("bitcoin-{}/bin/bitcoind.exe", VERSION));
+            } else {
+                command
+                    .arg(format!("bitcoin-{}/bin/bitcoind", VERSION))
+                    .arg(format!("bitcoin-{}/bin/bitcoin-cli", VERSION));
+                if cfg!(feature = "30_2") {
+                    command.arg(format!("bitcoin-{}/libexec/bitcoin-node", VERSION));
                 }
             }
+            let output = command
+                .output()
+                .context("failed to run tar; install tar and ensure it is in PATH")?;
+            anyhow::ensure!(
+                output.status.success(),
+                "tar failed to extract {}: {}",
+                download_filename,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            std::fs::remove_file(&archive_path)?;
 
             // Code signing for arm64 macOS:
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
-                use std::process::Command;
-
                 let to_sign = [
                     version_dir.join("bin").join("bitcoind"),
                     version_dir.join("bin").join("bitcoin-cli"),
