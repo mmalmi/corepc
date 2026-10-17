@@ -15,6 +15,8 @@ assert_eq!(header.height, 0);
 
 ## Automatic binaries download
 
+Automatic downloads require `unzip` in `PATH` to extract the downloaded binary.
+
 In your project Cargo.toml, activate the following features
 
 ```yml

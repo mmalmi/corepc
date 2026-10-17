@@ -8,11 +8,13 @@ mod download {
 #[cfg(feature = "download")]
 mod download {
     use std::fs::File;
-    use std::io::{BufRead, BufReader, Cursor};
+    use std::io::{BufRead, BufReader};
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
+    use std::process::Command;
     use std::str::FromStr;
 
+    use anyhow::Context;
     use bitcoin_hashes::{sha256, Hash};
 
     include!("src/versions.rs");
@@ -55,18 +57,28 @@ mod download {
 
             let downloaded_hash = sha256::Hash::hash(&downloaded_bytes);
             assert_eq!(expected_hash, downloaded_hash, "expected hash of {} is not matching", url);
-            let cursor = Cursor::new(downloaded_bytes);
-
-            let mut archive = zip::ZipArchive::new(cursor)?;
-            let mut file = archive.by_index(0)?;
+            let archive_path = Path::new(&out_dir).join(&download_filename);
+            std::fs::write(&archive_path, &downloaded_bytes)?;
+            let output = Command::new("unzip")
+                .arg("-p")
+                .arg(&archive_path)
+                .arg("electrs")
+                .output()
+                .context("failed to run unzip; install unzip and ensure it is in PATH")?;
+            anyhow::ensure!(
+                output.status.success(),
+                "unzip failed to extract {}: {}",
+                download_filename,
+                String::from_utf8_lossy(&output.stderr)
+            );
             let parent = destination_filename.parent().unwrap();
             std::fs::create_dir_all(parent)?;
-            let mut outfile = std::fs::File::create(&destination_filename)?;
-            std::io::copy(&mut file, &mut outfile).unwrap();
+            std::fs::write(&destination_filename, output.stdout)?;
             std::fs::set_permissions(
                 &destination_filename,
                 std::fs::Permissions::from_mode(0o755),
             )?;
+            std::fs::remove_file(&archive_path)?;
         }
         Ok(())
     }

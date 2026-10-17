@@ -16,6 +16,9 @@ When the auto-download feature is enabled, starting a regtest node is as simple 
 The build script will automatically download the bitcoin core version 25.1 from [bitcoin core](https://bitcoincore.org),
 verify the binary hash and place it in the build directory for this crate.
 
+Automatic downloads require `tar` in `PATH` (`gzip` is also needed with GNU tar).
+On Windows, use a ZIP-capable `tar`, such as the one included with Windows.
+
 When you don't use the auto-download feature you have the following options:
 
 * have `bitcoind` executable in the `PATH`
