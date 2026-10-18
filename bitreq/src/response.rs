@@ -50,6 +50,19 @@ pub struct Response {
     body: Vec<u8>,
 }
 
+#[cfg(feature = "std")]
+fn check_declared_body_size(
+    state: &HttpStreamState,
+    max_body_size: Option<usize>,
+) -> Result<(), Error> {
+    if let (HttpStreamState::ContentLength(length), Some(max)) = (state, max_body_size) {
+        if *length > max {
+            return Err(Error::BodyOverflow);
+        }
+    }
+    Ok(())
+}
+
 impl Response {
     #[cfg(feature = "std")]
     pub(crate) fn create(
@@ -59,6 +72,7 @@ impl Response {
     ) -> Result<Response, Error> {
         let mut body = Vec::new();
         if !is_head && parent.status_code != 204 && parent.status_code != 304 {
+            check_declared_body_size(&parent.state, max_body_size)?;
             for byte in &mut parent {
                 let (byte, length) = byte?;
                 if max_body_size.is_some_and(|max| body.len().saturating_add(length) > max) {
@@ -100,6 +114,7 @@ impl Response {
 
         let mut body = Vec::new();
         if !is_head && status_code != 204 && status_code != 304 {
+            check_declared_body_size(&state, max_body_size)?;
             match state {
                 EndOnClose => {
                     while let Some(byte_result) = read_until_closed_async(&mut stream).await {
@@ -370,6 +385,10 @@ impl Iterator for ResponseLazy {
 
     fn next(&mut self) -> Option<Self::Item> {
         use HttpStreamState::*;
+        let remaining_limit = self.max_body_size.map(|max| max.saturating_sub(self.bytes_read));
+        if let Err(error) = check_declared_body_size(&self.state, remaining_limit) {
+            return Some(Err(error));
+        }
         let result = match self.state {
             EndOnClose => read_until_closed(&mut self.stream),
             ContentLength(ref mut length) => read_with_content_length(&mut self.stream, length),
@@ -756,3 +775,6 @@ fn parse_header(mut line: String) -> Option<(String, String)> {
     }
     None
 }
+
+#[cfg(all(test, feature = "async"))]
+mod tests;
