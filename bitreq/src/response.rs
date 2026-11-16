@@ -113,6 +113,9 @@ impl Response {
                     }
                 }
                 ContentLength(mut length) => {
+                    if max_body_size.is_some_and(|max| length > max) {
+                        return Err(Error::BodyOverflow);
+                    }
                     while let Some(byte_result) =
                         read_with_content_length_async(&mut stream, &mut length).await
                     {
